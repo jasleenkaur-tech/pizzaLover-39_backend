@@ -1,6 +1,23 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+const getAdminEmails = () =>
+  (process.env.ADMIN_EMAILS || 'admin@pizzalovers39.com')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+
+const applyConfiguredAdminRole = async (user) => {
+  if (!user?.email) return user;
+
+  if (getAdminEmails().includes(user.email.toLowerCase()) && user.role !== 'admin') {
+    user.role = 'admin';
+    await user.save({ validateBeforeSave: false });
+  }
+
+  return user;
+};
+
 const cookieOptions = (maxAge) => {
   const isProduction = process.env.NODE_ENV === 'production';
 
@@ -12,9 +29,14 @@ const cookieOptions = (maxAge) => {
   };
 };
 
-const sendTokenResponse = (user, statusCode, res) => {
+const sendTokenResponse = async (user, statusCode, res) => {
+  await applyConfiguredAdminRole(user);
+
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
+
+  user.refresh = refreshToken;
+  await user.save({ validateBeforeSave: false });
 
   res.cookie('accessToken', accessToken, cookieOptions(15 * 60 * 1000));
   res.cookie('refreshToken', refreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000));
@@ -29,6 +51,7 @@ const sendTokenResponse = (user, statusCode, res) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
+      notificationPreferences: user.notificationPreferences,
     },
   });
 };
@@ -39,7 +62,7 @@ const sendTokenResponse = (user, statusCode, res) => {
 exports.signup = async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
-
+    console.log('signup data:', req.body);
     if (!name || !email || !password) {
       return res.status(400).json({
         success: false,
@@ -56,7 +79,7 @@ exports.signup = async (req, res) => {
     }
 
     const user = await User.create({ name, email, password, phone });
-    sendTokenResponse(user, 201, res);
+    await sendTokenResponse(user, 201, res);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -77,13 +100,38 @@ const getCookieValue = (req, cookieName) => {
   return null;
 };
 
+const getAccessTokenFromRequest = (req) => {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader) {
+    const [scheme, value] = authHeader.split(' ');
+
+    if (/^Bearer$/i.test(scheme) && value) {
+      return value;
+    }
+
+    if (!value) {
+      return authHeader;
+    }
+  }
+
+  return getCookieValue(req, 'accessToken') || null;
+};
+
+const clearAuthCookies = (res) => {
+  const options = cookieOptions(0);
+
+  res.clearCookie('accessToken', options);
+  res.clearCookie('refreshToken', options);
+};
+
 // @desc    Login user
 // @route   POST /api/auth/login
 // @access  Public
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-
+    console.log('Login data:', req.body);
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -98,10 +146,7 @@ exports.login = async (req, res) => {
         message: 'Invalid email or password.',
       });
     }
-    refreshToken = user.generateRefreshToken();
-    user.refresh = refreshToken;
-    await user.save({ validateBeforeSave: false });
-    sendTokenResponse(user, 200, res);
+    await sendTokenResponse(user, 200, res);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -122,7 +167,7 @@ exports.getMe = async (req, res) => {
 // @access  Public
 exports.refreshToken = async (req, res) => {
   try {
-    const refreshToken = getCookieValue(req, 'refreshToken') || req.body.refreshToken;
+    const refreshToken = getCookieValue(req, 'refreshToken') || (req.body && req.body.refreshToken);
 
     if (!refreshToken) {
       return res.status(401).json({
@@ -137,7 +182,7 @@ exports.refreshToken = async (req, res) => {
     );
     const user = await User.findById(decoded.id);
 
-    if (!user) {
+    if (!user || user.refresh !== refreshToken) {
       return res.status(401).json({
         success: false,
         message: 'Invalid refresh token.',
@@ -168,15 +213,43 @@ exports.refreshToken = async (req, res) => {
 
 // @desc    Logout user
 // @route   POST /api/auth/logout
-// @access  Private
+// @access  Public
 exports.logout = async (req, res) => {
-  const options = cookieOptions(0);
+  try {
+    const accessToken = getAccessTokenFromRequest(req);
+    const refreshToken = getCookieValue(req, 'refreshToken') || (req.body && req.body.refreshToken);
+    let userId = null;
 
-  res.clearCookie('accessToken', options);
-  res.clearCookie('refreshToken', options);
+    if (accessToken) {
+      try {
+        userId = jwt.verify(accessToken, process.env.JWT_SECRET).id;
+      } catch (error) {
+        userId = null;
+      }
+    }
 
-  res.status(200).json({
-    success: true,
-    message: 'Logged out successfully.',
-  });
+    if (!userId && refreshToken) {
+      try {
+        userId = jwt.verify(
+          refreshToken,
+          process.env.REFRESH_SECRET || process.env.JWT_SECRET
+        ).id;
+      } catch (error) {
+        userId = null;
+      }
+    }
+
+    if (userId) {
+      await User.findByIdAndUpdate(userId, { refresh: null });
+    }
+  } catch (error) {
+    console.error('Logout cleanup failed:', error.message);
+  } finally {
+    clearAuthCookies(res);
+
+    res.status(200).json({
+      success: true,
+      message: 'Logged out successfully.',
+    });
+  }
 };

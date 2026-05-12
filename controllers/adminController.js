@@ -1,5 +1,7 @@
 const Order = require('../models/Order');
 const User = require('../models/User');
+const { getPaginationOptions, buildPaginationMeta } = require('../utils/pagination');
+const { notifyOrderUser } = require('../utils/notificationService');
 
 const VALID_STATUSES = ['pending', 'confirmed', 'preparing', 'outForDelivery', 'delivered', 'cancelled'];
 
@@ -9,6 +11,8 @@ const VALID_STATUSES = ['pending', 'confirmed', 'preparing', 'outForDelivery', '
 exports.getAllOrders = async (req, res) => {
   try {
     const filter = {};
+    const { skip, limit, page } = getPaginationOptions(req.query);
+
     if (req.query.status) {
       if (!VALID_STATUSES.includes(req.query.status)) {
         return res.status(400).json({ success: false, message: 'Invalid status filter.' });
@@ -16,12 +20,23 @@ exports.getAllOrders = async (req, res) => {
       filter.status = req.query.status;
     }
 
-    const orders = await Order.find(filter)
-      .sort({ createdAt: -1 })
-      .populate('user', 'name email phone')
-      .populate('items.menuItem', 'name');
+    const [orders, totalItems] = await Promise.all([
+      Order.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('user', 'name email phone')
+        .populate('items.menuItem', 'name')
+        .populate('transaction'),
+      Order.countDocuments(filter),
+    ]);
 
-    res.status(200).json({ success: true, count: orders.length, orders });
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      pagination: buildPaginationMeta({ totalItems, skip, limit, page }),
+      orders,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -33,6 +48,7 @@ exports.getAllOrders = async (req, res) => {
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status, note } = req.body;
+    console.log("Update order status data:", req.body);
 
     if (!status) {
       return res.status(400).json({ success: false, message: 'Status is required.' });
@@ -58,10 +74,14 @@ exports.updateOrderStatus = async (req, res) => {
 
     order.status = status;
     if (note) {
-      order.statusHistory[order.statusHistory.length - 1].note = note;
+      order.statusHistory.push({ status, note });
     }
 
     await order.save();
+
+    notifyOrderUser({ order, type: 'orderStatusUpdated' }).catch((error) => {
+      console.error('Order status notification failed:', error.message);
+    });
 
     res.status(200).json({ success: true, message: `Order status updated to "${status}".`, order });
   } catch (error) {

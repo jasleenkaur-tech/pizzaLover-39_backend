@@ -1,11 +1,6 @@
 const mongoose = require('mongoose');
 
 const orderItemSchema = new mongoose.Schema({
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
-  },
   menuItem: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'MenuItem',
@@ -43,8 +38,17 @@ const orderSchema = new mongoose.Schema(
     total: { type: Number, required: true },
     paymentMethod: {
       type: String,
-      enum: ['cashOnDelivery', 'upi', 'card', 'wallet'],
+      enum: ['cashOnDelivery', 'razorpay', 'upi', 'card', 'wallet'],
       required: true,
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'paid', 'failed', 'notRequired'],
+      default: 'pending',
+    },
+    transaction: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Transaction',
     },
     status: {
       type: String,
@@ -76,7 +80,10 @@ const orderSchema = new mongoose.Schema(
 // Auto-push to statusHistory on status change
 orderSchema.pre('save', function (next) {
   if (this.isModified('status')) {
-    this.statusHistory.push({ status: this.status });
+    const latestStatus = this.statusHistory[this.statusHistory.length - 1]?.status;
+    if (latestStatus !== this.status) {
+      this.statusHistory.push({ status: this.status });
+    }
   }
   next();
 });
@@ -84,5 +91,6 @@ orderSchema.pre('save', function (next) {
 // Index for fast user order queries
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
+orderSchema.index({ paymentStatus: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

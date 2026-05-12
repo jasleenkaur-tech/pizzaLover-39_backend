@@ -9,10 +9,13 @@ const {
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
+// Done
 router.post('/signup', signup);
 router.post('/login', login);
 router.post('/refresh', refreshToken);
-router.post('/logout', protect, logout);
+router.post('/logout', logout);
+
+// Not Yet
 router.get('/me', protect, getMe);
 
 module.exports = router;

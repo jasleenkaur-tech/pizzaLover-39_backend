@@ -40,11 +40,28 @@ const userSchema = new mongoose.Schema(
     refresh:{
       type: String,
       default: null,
-    }
-    //  refreshtoken:{
-    //   type: String,
-    //   default: null,
-    // }
+    },
+    notificationPreferences: {
+      pushNotifications: {
+        type: Boolean,
+        default: true,
+      },
+      orderUpdates: {
+        type: Boolean,
+        default: true,
+      },
+    },
+    pushTokens: [
+      {
+        token: { type: String, required: true },
+        platform: {
+          type: String,
+          enum: ['android', 'ios', 'web', 'unknown'],
+          default: 'unknown',
+        },
+        lastUsedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );

@@ -1,11 +1,21 @@
 const MenuItem = require('../models/MenuItem');
+const { getPaginationOptions, buildPaginationMeta } = require('../utils/pagination');
 
 // @desc    Get all menu items grouped by category
 // @route   GET /api/menu
 // @access  Public
 exports.getMenu = async (req, res) => {
   try {
-    const items = await MenuItem.find({ isAvailable: true }).sort({ isBestseller: -1, name: 1 });
+    const filter = { isAvailable: true };
+    const { skip, limit, page } = getPaginationOptions(req.query);
+
+    const [items, totalItems] = await Promise.all([
+      MenuItem.find(filter)
+        .sort({ isBestseller: -1, name: 1 })
+        .skip(skip)
+        .limit(limit),
+      MenuItem.countDocuments(filter),
+    ]);
 
     // Group items by category
     const groupedMenu = items.reduce((acc, item) => {
@@ -18,6 +28,7 @@ exports.getMenu = async (req, res) => {
     res.status(200).json({
       success: true,
       totalItems: items.length,
+      pagination: buildPaginationMeta({ totalItems, skip, limit, page }),
       menu: groupedMenu,
     });
   } catch (error) {

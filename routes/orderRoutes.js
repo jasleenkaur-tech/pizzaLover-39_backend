@@ -5,7 +5,7 @@ const { protect } = require('../middleware/authMiddleware');
 
 router.use(protect); // All order routes require authentication
 
-router.post('/createOrder', placeOrder);
+router.post('/createOrder',placeOrder);
 router.get('/my-orders', getMyOrders);
 router.get('/:id', getOrderById);
 

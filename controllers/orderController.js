@@ -1,19 +1,29 @@
 const Order = require('../models/Order');
 const MenuItem = require('../models/MenuItem');
+const { getPaginationOptions, buildPaginationMeta } = require('../utils/pagination');
+const { notifyOrderUser } = require('../utils/notificationService');
+
+const VALID_PAYMENT_METHODS = ['cashOnDelivery', 'razorpay', 'upi', 'card', 'wallet'];
 
 // @desc    Place a new order
 // @route   POST /api/orders
 // @access  Private
 exports.placeOrder = async (req, res) => {
+  console.log('Placing order with data:', req.body);
   try {
-    const { items, paymentMethod, customerDetails, deliveryFee = 40 } = req.body;
-    const {user} = req.user; // Get user from auth middleware
-
+    const { items, paymentMethod, customerDetails } = req.body;
+    const user=req.user;
     if (!items || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Order must have at least one item.' });
     }
     if (!customerDetails?.name || !customerDetails?.phone || !customerDetails?.address) {
       return res.status(400).json({ success: false, message: 'Customer name, phone, and address are required.' });
+    }
+    if (!VALID_PAYMENT_METHODS.includes(paymentMethod)) {
+      return res.status(400).json({
+        success: false,
+        message: `paymentMethod must be one of: ${VALID_PAYMENT_METHODS.join(', ')}.`,
+      });
     }
 
     // Validate items and build order items with price snapshots
@@ -49,23 +59,29 @@ exports.placeOrder = async (req, res) => {
         emoji: menuItem.emoji,
       });
     }
-
+    const deliveryFee=(subtotal > 500 ? 0 : 30)
     const total = subtotal + deliveryFee;
 
     const order = await Order.create({
-      user: user._id,
+      user:user._id,
       items: orderItems,
       subtotal,
       deliveryFee,
       total,
       paymentMethod,
+      paymentStatus: paymentMethod === 'cashOnDelivery' ? 'notRequired' : 'pending',
       customerDetails,
       statusHistory: [{ status: 'pending' }],
     });
 
+    notifyOrderUser({ order, type: 'orderCreated' }).catch((error) => {
+      console.error('Order notification failed:', error.message);
+    });
+
     res.status(201).json({ success: true, order });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const statusCode = error.name === 'ValidationError' ? 400 : 500;
+    res.status(statusCode).json({ success: false, message: error.message });
   }
 };
 
@@ -74,11 +90,25 @@ exports.placeOrder = async (req, res) => {
 // @access  Private
 exports.getMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.user._id })
-      .sort({ createdAt: -1 })
-      .populate('items.menuItem', 'name emoji');
+    const filter = { user: req.user._id };
+    const { skip, limit, page } = getPaginationOptions(req.query);
 
-    res.status(200).json({ success: true, count: orders.length, orders });
+    const [orders, totalItems] = await Promise.all([
+      Order.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('items.menuItem', 'name emoji')
+        .populate('transaction'),
+      Order.countDocuments(filter),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      pagination: buildPaginationMeta({ totalItems, skip, limit, page }),
+      orders,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -89,7 +119,9 @@ exports.getMyOrders = async (req, res) => {
 // @access  Private
 exports.getOrderById = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id).populate('items.menuItem', 'name emoji');
+    const order = await Order.findById(req.params.id)
+      .populate('items.menuItem', 'name emoji')
+      .populate('transaction');
 
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found.' });
